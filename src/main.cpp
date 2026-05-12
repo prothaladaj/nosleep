@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <powrprof.h>
 
+#include <cstring>
 #include <cwchar>
 
 namespace {
@@ -52,7 +53,8 @@ struct State {
   bool lockOnClose = false;
   bool killChromeOnClose = false;
   bool autostartEnabled = false;
-  DWORD disableCount = 0;
+  DWORD sleepCount = 0;
+  DWORD uptimeTicks = 0;
   bool polish = false;
 };
 
@@ -71,7 +73,7 @@ enum class TextId {
   LockOnClose,
   KillChromeOnClose,
   Autostart,
-  DisableCounter,
+  SleepCounter,
   Uptime,
 };
 
@@ -90,7 +92,7 @@ const wchar_t* Text(TextId id) {
       case TextId::LockOnClose: return L"Zablokuj ekran po zamknięciu klapy";
       case TextId::KillChromeOnClose: return L"Zabij chrome.exe po zamknięciu klapy";
       case TextId::Autostart: return L"Autostart z systemem";
-      case TextId::DisableCounter: return L"Wyłączenia usypiania od uruchomienia: %lu";
+      case TextId::SleepCounter: return L"Uśpienia/hibernacje od startu systemu: %lu";
       case TextId::Uptime: return L"Uptime systemu: %llud %02llu:%02llu:%02llu";
     }
   }
@@ -108,7 +110,7 @@ const wchar_t* Text(TextId id) {
     case TextId::LockOnClose: return L"Lock screen on lid close";
     case TextId::KillChromeOnClose: return L"Kill chrome.exe on lid close";
     case TextId::Autostart: return L"Start with Windows";
-    case TextId::DisableCounter: return L"Sleep disables since app start: %lu";
+    case TextId::SleepCounter: return L"Sleeps/hibernations since system boot: %lu";
     case TextId::Uptime: return L"System uptime: %llud %02llu:%02llu:%02llu";
   }
   return L"";
@@ -242,6 +244,72 @@ void RunHidden(const wchar_t* command) {
   }
 }
 
+DWORD CountXmlEvents(const char* text) {
+  DWORD count = 0;
+  const char* p = text;
+  while ((p = std::strstr(p, "<Event ")) != nullptr) {
+    ++count;
+    p += 7;
+  }
+  return count;
+}
+
+bool RunCapture(const wchar_t* command, char* output, DWORD outputSize) {
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE readPipe{};
+  HANDLE writePipe{};
+  if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) return false;
+  SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOW si{};
+  PROCESS_INFORMATION pi{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  si.hStdOutput = writePipe;
+  si.hStdError = writePipe;
+  si.wShowWindow = SW_HIDE;
+
+  wchar_t buffer[768]{};
+  lstrcpynW(buffer, command, ARRAYSIZE(buffer));
+  bool ok = CreateProcessW(nullptr, buffer, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi) != FALSE;
+  CloseHandle(writePipe);
+  if (!ok) {
+    CloseHandle(readPipe);
+    return false;
+  }
+
+  DWORD total = 0;
+  for (;;) {
+    DWORD read = 0;
+    if (!ReadFile(readPipe, output + total, outputSize - total - 1, &read, nullptr) || read == 0) break;
+    total += read;
+    if (total + 1 >= outputSize) break;
+  }
+  output[total] = 0;
+
+  WaitForSingleObject(pi.hProcess, 3000);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  CloseHandle(readPipe);
+  return true;
+}
+
+DWORD QuerySleepCountSinceBoot() {
+  ULONGLONG uptimeMs = GetTickCount64();
+  wchar_t cmd[768]{};
+  std::swprintf(
+      cmd, ARRAYSIZE(cmd),
+      L"wevtutil qe System /q:\"*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=42 and TimeCreated[timediff(@SystemTime) <= %llu]]]\" /f:xml",
+      uptimeMs);
+
+  char output[32768]{};
+  if (!RunCapture(cmd, output, sizeof(output))) return g.sleepCount;
+  return CountXmlEvents(output);
+}
+
 void ApplyPowerSettings() {
   DWORD action = g.lidActionEnabled ? g.lidAction : kPowerNone;
   wchar_t cmd[256]{};
@@ -279,7 +347,7 @@ void UpdateControls() {
   SendMessageW(g.killChrome, BM_SETCHECK, g.killChromeOnClose ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g.autostartBox, BM_SETCHECK, g.autostartEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
   wchar_t text[128]{};
-  std::swprintf(text, ARRAYSIZE(text), Text(TextId::DisableCounter), g.disableCount);
+  std::swprintf(text, ARRAYSIZE(text), Text(TextId::SleepCounter), g.sleepCount);
   SetWindowTextW(g.counter, text);
   SetWindowTextW(g.enabled, Text(TextId::LidActionEnabled));
   SetWindowTextW(g.sleep, Text(TextId::SleepOnClose));
@@ -305,10 +373,15 @@ void UpdateUptime() {
   SetWindowTextW(g.uptime, text);
 }
 
+void UpdateSleepCount() {
+  g.sleepCount = QuerySleepCountSinceBoot();
+  wchar_t text[128]{};
+  std::swprintf(text, ARRAYSIZE(text), Text(TextId::SleepCounter), g.sleepCount);
+  SetWindowTextW(g.counter, text);
+}
+
 void ToggleEnabled() {
-  bool wasEnabled = g.lidActionEnabled;
   g.lidActionEnabled = !g.lidActionEnabled;
-  if (wasEnabled && !g.lidActionEnabled) ++g.disableCount;
   SaveSettings();
   ApplyPowerSettings();
   UpdateControls();
@@ -350,6 +423,7 @@ void CreateControls() {
                              g.hwnd, reinterpret_cast<HMENU>(IDC_UPTIME), GetModuleHandleW(nullptr), nullptr);
   UpdateControls();
   UpdateUptime();
+  UpdateSleepCount();
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -368,6 +442,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
       if (wp == IDT_UPTIME) {
         UpdateUptime();
+        if (++g.uptimeTicks >= 60) {
+          g.uptimeTicks = 0;
+          UpdateSleepCount();
+        }
         return 0;
       }
       break;
@@ -421,6 +499,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
 
     case WM_POWERBROADCAST:
+      if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) {
+        UpdateSleepCount();
+        return TRUE;
+      }
       if (wp == PBT_POWERSETTINGCHANGE) {
         auto* setting = reinterpret_cast<POWERBROADCAST_SETTING*>(lp);
         if (setting && IsEqualGUID(setting->PowerSetting, kGuidLidSwitchStateChange) && setting->DataLength >= sizeof(DWORD)) {
