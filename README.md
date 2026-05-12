@@ -6,11 +6,20 @@ Funkcje:
 
 - ikona w trayu: zielona, gdy system ma usypiać/hibernować po zamknięciu klapy; czerwona, gdy akcja jest wyłączona,
 - zwykłe okno widoczne na pasku zadań,
-- licznik wyłączeń usypiania od uruchomienia,
+- licznik uśpień/hibernacji od startu systemu,
+- licznik zamknięć klapy od startu aplikacji,
 - autostart per użytkownik przez `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-- konfiguracja akcji po zamknięciu klapy: uśpij albo hibernuj,
+- opcjonalny start zminimalizowany do tray,
+- osobna konfiguracja akcji po zamknięciu klapy dla zasilania AC i baterii: brak, uśpij albo hibernuj,
+- podgląd aktualnej systemowej akcji AC/bateria,
+- opcjonalne przywrócenie poprzednich ustawień po zamknięciu aplikacji,
 - opcjonalny lock screen po zamknięciu klapy,
-- opcjonalne ubicie procesów `chrome.exe` po zamknięciu klapy.
+- opcjonalne ubicie skonfigurowanych procesów po zamknięciu klapy,
+- proste powiadomienia tray po zmianie stanu,
+- szybkie przełączenie lewym kliknięciem ikony tray,
+- globalny skrót `Ctrl+Alt+L`,
+- prosty log zdarzeń w oknie aplikacji,
+- polski interfejs na polskim Windows, angielski na pozostałych systemach.
 
 ## Build
 
